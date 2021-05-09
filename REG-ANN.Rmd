@@ -1,0 +1,259 @@
+---
+title: "REG ANN"
+output: html_notebook
+---
+```{r}
+rm(list = ls(all = TRUE))
+```
+
+Loading packages
+```{r}
+library(dplyr)
+#library(Hmisc)
+library(cowplot)
+library(WVPlots)
+```
+
+
+```{r}
+library(neuralnet)
+library(MASS)
+library(ggplot2)
+library(tidyverse)
+library(GGally)
+library(corrplot)
+library(plyr)
+library(boot)
+```
+
+database(Boston) : Cette base de données contient des informations collectées par le US Census Service concernant le logement dans la région de Boston Mass,
+Chargement de la base de données.
+
+```{r}
+data <- Boston
+summary(data)
+head(data)
+```
+
+Maintenant on va essayer de trouver les relation entre les variables (y ~ x) de la dataset en utilisant les fonction du package ggplot et corrplot
+
+```{r}
+ggpairs(data)
+corrplot(cor(data))
+```
+
+
+Fractionnement des données
+
+```{r}
+set.seed(12356)
+index <- sample(1:nrow(data),round(0.75*nrow(data)))
+train <- data[index,]
+test <- data[-index,]
+```
+
+On va essayer dans un premier temps de créer un model de regression en utilisant la fonction glm
+
+```{r}
+Model.lm <- glm(medv~.,data = train)
+summary(Model.lm)
+```
+
+Comme on voie dans le résumée la plupart des variables sont significative, on va après calculer L'accuracy du model après les prédictions
+
+```{r}
+Model.lm_pred <- predict(Model.lm,newdata = test)
+MSE.lm <- (1/nrow(test))*sum((Model.lm_pred - test$medv)^2) 
+MSE.lm
+print('Regression models MSE : ',MSE.lm)
+```
+
+~~~~~~~~Preparation du reseau de neuron::
+
+Dans un premier temps, nous allons traiter les données, la y a plusieurs Methods permettant la normalisation de la base de données (z-normalisation/min-max), au cours de cette analyse on va essayer de normaliser les donnes dans l'intervalle [0,1]/[-1,1].
+ce processus a généralement tendance à donner de meilleurs résultats
+
+
+```{r}
+MMnormal <- function(x){
+  (x-min(x))/(max(x)-min(x))
+}
+scaled_data <- data %>% mutate_all(MMnormal)
+head(scaled_data)
+train_ <- scaled_data[index,]
+test_ <- scaled_data[-index,]
+summary(test_)
+```
+
+Avant d’établir le réseau il faut configure une  paramètre très important qui est les couches cachée, généralement on n'a pas de Methods/règle spécifique pour faire ça mais c'est recommandé de choisir 3/2 nombre des inputs + nombre des neufs de l'output
+
+```{r}
+names <- names(data)
+formule = as.formula(paste("medv ~", paste(names[!names %in% "medv"], collapse = " + ")))
+Model.RNN1 <- neuralnet(formule,train_,hidden = c(5,3),linear.output = TRUE)
+plot(Model.RNN1)
+```
+
+Maintenant on peut prédire Medv du test puis calculer MSE (l'erreur quadratique moyen)
+Note : Pour calculer MSE il faut dénormaliser les données
+
+```{r}
+Model.RNN1_pred <- neuralnet::compute(Model.RNN1,test_[1:13])
+Model.RNN1_pred_den <- Model.RNN1_pred$net.result*(max(data$medv)-min(data$medv))+min(data$medv)
+test_den <- (test_$medv)*(max(data$medv)-min(data$medv))+min(data$medv)
+MSE.RNN1 <- sum((Model.RNN1_pred_den - test_den)^2)/nrow(test_)
+paste("MSE pour Model de regression : ",MSE.lm)
+paste("MSE pour Reseau de neuron : ",MSE.RNN1)
+```
+```{r}
+#Erreur liee a l'entrainement 
+Train_MSE.RNN1 <- sum((Model.RNN1$net.result[[1]] - train_[,14])^2)/nrow(train_)
+#Erreur liee au test
+Test_MSE.RNN1 <- sum((Model.RNN1_pred$net.result - test_[,14])^2)/nrow(test_)
+Train_MSE.RNN1
+Test_MSE.RNN1
+```
+
+
+Comme on voie dans Les résultats Le réseau fait un meilleur travail que le modèle linéaire pour prédire medv mais ce n'est pas diffusant pour juger alors par la suite on va performer une cross validation (a la fin).
+On va visualiser les résultats dans un scatter-plot
+
+
+```{r}
+#par(mfrow=c(1,2))
+x <- test$RNN1.prediction <- Model.RNN1_pred_den
+ggplot(test, aes(y = RNN1.prediction, x = medv)) + 
+  geom_point(color = "blue", alpha = 0.7) + 
+  geom_abline(color = "black") +
+  ggtitle("Prediction vs. Real values Neural Network")
+  #gglegend("NN")
+y <- test$LM.prediction <- Model.lm_pred
+ggplot(test, aes(y = LM.prediction, x = medv)) + 
+  geom_point(color = "red", alpha = 0.7) + 
+  geom_abline(color = "black") +
+  ggtitle("Prediction vs. Real values Linear Model")
+  #gglegend("GLM")
+x
+y
+
+
+
+```
+
+Comme on voie dans les graphs, les point dans le réseau sont plus concentrer autour du ligne de régression!
+
+~~~~~Amelioration du reseau :: 
+
+Le Réseau de neurone est une boîte noire alors que la seule méthode pour enrichir le model et d'essayer plusieurs fois et de changer les paramètres : hidden/act.fct ..
+
+```{r}
+Model.RNN2 <- neuralnet(formule,train_,hidden = c(4,2),act.fct = "logistic",linear.output = TRUE)
+plot(Model.RNN2)
+```
+Testing the Model
+```{r}
+Model.RNN2_pred <- neuralnet::compute(Model.RNN2,test_[,-14])
+#Erreur liee a l'entrainement 
+Train_MSE.RNN2 <- sum((Model.RNN2$net.result[[1]] - train_[,14])^2)/nrow(train_)
+#Erreur liee au test
+Test_MSE.RNN2 <- sum((Model.RNN2_pred$net.result - test_[,14])^2)/nrow(test_)
+paste("Erreur liee au train : ",Train_MSE.RNN2)
+paste("Erreur liee au test : ",Test_MSE.RNN2)
+
+```
+
+On va maintenant essayer la fonction d'activation tangent hyperbolique, pour cela on est besoin de réajuster notre intervalle vers [-1,1]
+
+```{r}
+set.seed(1256)
+norm_tanh <- function(x){
+   (2 * ((x - min(x))/(max(x) - min(x)))) - 1
+}
+train_tanh <- train_ %>% mutate_all(norm_tanh)
+test_tanh <- test_ %>% mutate_all(norm_tanh)
+Model.RNN3 <- neuralnet(formule,train_tanh,hidden = c(5,3),act.fct = "tanh",linear.output = TRUE)
+#model prediction
+Model.RNN3_pred <- neuralnet::compute(Model.RNN3,test_tanh[,-14])
+#Erreur liee a l'entrainement 
+Train_MSE.RNN3 <- sum((Model.RNN3$net.result[[1]] - train_tanh[,14])^2)/nrow(train_tanh)
+#Erreur liee au test
+Test_MSE.RNN3 <- sum((Model.RNN3_pred$net.result - test_tanh[,14])^2)/nrow(test_tanh)
+paste("Erreur liee au train : ",Train_MSE.RNN3)
+paste("Erreur liee au test : ",Test_MSE.RNN3)
+```
+```{r}
+RNN_Errors <- tibble(Network = rep(c("RNN1", "RNN2", "RNN3"), each = 2), 
+                               DataSet = rep(c("train", "test"), time = 3), 
+                               MSE = c(Train_MSE.RNN1, Test_MSE.RNN1, 
+                                       Train_MSE.RNN2, Test_MSE.RNN2, 
+                                       Train_MSE.RNN3, Test_MSE.RNN3))
+
+RNN_Errors %>% 
+  ggplot(aes(Network, MSE, fill = DataSet)) + 
+  geom_col(position = "dodge") + 
+  ggtitle("MSE")
+```
+Selon le graph on note RNN1 et RNN2 sont meilleur que RNN3, on va choisir RNN2
+
+
+Généralement c'est recommander de construire Le réseau plusieurs fois et puis choisir le meilleur ::
+
+```{r}
+Model.RNN2 <- neuralnet(formule,train_,hidden = c(4,2),act.fct = "logistic",linear.output = TRUE,rep = 10)
+plot(Model.RNN2,rep = "best")
+```
+
+~~~~~~~~Cross validation
+
+Cross validation est une autre étape très importante de la construction de modèles prédictifs, cette Methods nous permet de répéter les processus qu'on a déjà fait :
+
+--> Cross validation pour le model de régression par glm
+
+
+```{r}
+set.seed(1256)
+fit.lm <- glm(medv~.,data=data)
+fit.lm_cv <- cv.glm(data,fit.lm,K=10)
+```
+
+```{r}
+paste("Raw Cross error : ",fit.lm_cv$delta[1],"||| Adjusted : ",fit.lm_cv$delta[2])
+```
+
+```{r}
+set.seed(450)
+cv.error <- NULL
+k <- 10
+pbar <- create_progress_bar('text')
+pbar$init(k)
+for(i in 1:k){
+    index <- sample(1:nrow(data),round(0.9*nrow(data)))
+    train.cv <- scaled_data[index,]
+    test.cv <- scaled_data[-index,]
+    nn <- neuralnet(formule,data=train.cv,hidden=c(4,2),linear.output=T)   
+    pr.nn <- compute(nn,test.cv[,1:13])
+    pr.nn <- pr.nn$net.result*(max(data$medv)-min(data$medv))+min(data$medv)   
+    test.cv.r <- (test.cv$medv)*(max(data$medv)-min(data$medv))+min(data$medv)   
+    cv.error[i] <- sum((test.cv.r - pr.nn)^2)/nrow(test.cv)    
+    pbar$step()
+}
+
+```
+```{r}
+plot(cv.error,type = "b",xlab = "nn",ylab = "mse")
+boxplot(cv.error,xlab='MSE CV',col='cyan',
+        border='blue',names='CV error (MSE)',
+        main='CV error (MSE) for NN',horizontal=TRUE)
+```
+
+
+```{r}
+library(caret)
+index <- sample(1:nrow(data),round(0.9*nrow(data)))
+train.cv <- data[index,]
+model.nnet = train(medv~., data=train.cv,
+method="nnet",
+preProc=c("center", "scale"))
+print(model.nnet)
+```
+
